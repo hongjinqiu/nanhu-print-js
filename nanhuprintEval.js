@@ -414,7 +414,7 @@ function nanhuprintEval_loopEvalDynamicElement(objLi, env, expressionEvaluator, 
  * 例如:div -> DivEval
  * if -> IfEval
  */
-function nanhuprintEval_loopEvalToHtml(objLi, env, textLi) {
+function nanhuprintEval_loopEvalToHtml(objLi, env, textLi, customConfig) {
     if (objLi) {
         var evalFactory = new EvalFactory();
         for (var i = 0; i < objLi.length; i++) {
@@ -422,7 +422,34 @@ function nanhuprintEval_loopEvalToHtml(objLi, env, textLi) {
             if (!nanhuprintEval_isCssElement(objLi[i].TYPE_NAME)) {
                 var evalImplment = evalFactory.routeEval(objLi[i]);
                 if (evalImplment) {
-                    var text = evalImplment.evalToHtml(objLi[i], env);
+                    var itemCustomConfig = null;
+                    if (customConfig && customConfig.tdParamsMap) {
+                        if (objLi[i].TYPE_NAME == "nanhuprint.Tr") {
+                            var isFirstLine = (i == 0);
+                            var isLastLine = (i == objLi.length - 1);
+                            itemCustomConfig = {
+                                tdParamsMap: customConfig.tdParamsMap,
+                                isFirstLine: isFirstLine,
+                                isLastLine: isLastLine
+                            };
+                        } else if (objLi[i].TYPE_NAME == "nanhuprint.Td") {
+                            var tdParams = customConfig.tdParamsMap[objLi[i].id];
+                            if (tdParams) {
+                                var addStyle = null;
+                                if (customConfig.isFirstLine && tdParams.firstLineOfTbodyCss) {
+                                    addStyle = tdParams.firstLineOfTbodyCss;
+                                } else if (customConfig.isLastLine && tdParams.lastLineofTbodyCss) {
+                                    addStyle = tdParams.lastLineofTbodyCss;
+                                }
+                                if (addStyle) {
+                                    itemCustomConfig = {
+                                        addStyle: addStyle
+                                    };
+                                }
+                            }
+                        }
+                    }
+                    var text = evalImplment.evalToHtml(objLi[i], env, itemCustomConfig);
                     textLi.push(text);
                 }
             }
@@ -531,7 +558,19 @@ function nanhuprintEval_commonEvalToHtml(tagName, metaObj, attrFieldLi, childKey
     // class 属性对应 xml 里面的 cls
     var classReplace = "";
     if (obj.cls !== undefined) {
-        classReplace = 'class="{class}"'.replace("{class}", obj.cls);
+        classReplace = obj.cls;
+    }
+    if (customConfig && customConfig.addStyle) {
+        classReplace = customConfig.addStyle;
+        var tempObj = {};
+        for (var key in obj) {
+            tempObj[key] = obj[key];
+        }
+        tempObj.cls = classReplace;
+        style = nanhuprintEval_getAttributeToStyleString(tempObj, childKey);
+    }
+    if (classReplace) {
+        classReplace = 'class="{class}"'.replace("{class}", classReplace);
     }
     var template = '<{tagName} {attrFieldText} {classReplace} style="{style}">'.replace("{classReplace}", classReplace);
     template = template.replace("{tagName}", tagName);
@@ -545,7 +584,7 @@ function nanhuprintEval_commonEvalToHtml(tagName, metaObj, attrFieldLi, childKey
             resultLi.push(text);
         }
     }
-    nanhuprintEval_loopEvalToHtml(obj[childKey], env, resultLi);
+    nanhuprintEval_loopEvalToHtml(obj[childKey], env, resultLi, customConfig);
 
     resultLi.push("</{tagName}>".replace("{tagName}", tagName));
     return resultLi.join("");
@@ -1061,7 +1100,39 @@ TbodyEval.prototype.evalDynamicElement = function(metaObj, env, expressionEvalua
 
 TbodyEval.prototype.evalToHtml = function(metaObj, env) {
     var attrFieldLi = nanhuprintEval_commonAttrField;
-    return nanhuprintEval_commonEvalToHtml("tbody", metaObj, attrFieldLi, "ifAndForEachAndSet", env);
+    var nanhuprintEnv = nanhuprintEval_getNanhuprintEnv(env);
+    var params = nanhuprintEnv.params || [];
+    var tdParamsMap = {};
+    
+    for (var i = 0; i < params.length; i++) {
+        var tagId = params[i].tagId;
+        var paramList = params[i].params;
+        var firstLineOfTbodyCss = null;
+        var lastLineofTbodyCss = null;
+        
+        if (paramList) {
+            for (var j = 0; j < paramList.length; j++) {
+                if (paramList[j].name == "firstLineOfTbodyCss") {
+                    firstLineOfTbodyCss = paramList[j].value;
+                } else if (paramList[j].name == "lastLineofTbodyCss") {
+                    lastLineofTbodyCss = paramList[j].value;
+                }
+            }
+        }
+        
+        if (firstLineOfTbodyCss || lastLineofTbodyCss) {
+            tdParamsMap[tagId] = {
+                firstLineOfTbodyCss: firstLineOfTbodyCss,
+                lastLineofTbodyCss: lastLineofTbodyCss
+            };
+        }
+    }
+    
+    var customConfig = {
+        tdParamsMap: tdParamsMap
+    };
+    
+    return nanhuprintEval_commonEvalToHtml("tbody", metaObj, attrFieldLi, "ifAndForEachAndSet", env, customConfig);
 }
 
 TbodyEval.prototype.setIdAndParentId = function(metaObj, parentObj) {
@@ -1186,9 +1257,83 @@ TrEval.prototype.evalDynamicElement = function(metaObj, env, expressionEvaluator
     return nanhuprintEval_commonEvalDynamicElement("tr", metaObj, "ifAndForEachAndSet", env, expressionEvaluator);
 }
 
-TrEval.prototype.evalToHtml = function(metaObj, env) {
+TrEval.prototype.evalToHtml = function(metaObj, env, customConfig) {
     var attrFieldLi = nanhuprintEval_commonAttrField;
-    return nanhuprintEval_commonEvalToHtml("tr", metaObj, attrFieldLi, "ifAndForEachAndSet", env);
+    var obj = nanhuprintEval_getOnionObj(metaObj);
+    var resultLi = [];
+
+    var attrFieldTextLi = [];
+    for (var i = 0; i < attrFieldLi.length; i++) {
+        var item = attrFieldLi[i];
+        if (obj[item] !== undefined) {
+            var value = obj[item] + "";
+            var value = nanhuprintEval_replaceEscapeCharacter(value);
+            attrFieldTextLi.push('{item}="{value}"'.replace("{item}", item).replace("{value}", value));
+        }
+    }
+
+    var style = nanhuprintEval_getAttributeToStyleString(obj, "ifAndForEachAndSet");
+
+    var classReplace = "";
+    if (obj.cls !== undefined) {
+        classReplace = 'class="{class}"'.replace("{class}", obj.cls);
+    }
+    var template = '<tr {attrFieldText} {classReplace} style="{style}">'.replace("{classReplace}", classReplace);
+    template = template.replace("{attrFieldText}", attrFieldTextLi.join(" "));
+    template = template.replace("{style}", style);
+    resultLi.push(template);
+
+    var childLi = obj.ifAndForEachAndSet;
+    if (childLi) {
+        var evalFactory = new EvalFactory();
+        for (var i = 0; i < childLi.length; i++) {
+            if (!nanhuprintEval_isCssElement(childLi[i].TYPE_NAME)) {
+                var evalImplment = evalFactory.routeEval(childLi[i]);
+                if (evalImplment) {
+                    var itemCustomConfig = null;
+                    if (customConfig && childLi[i].TYPE_NAME == "nanhuprint.Td") {
+                        var tdObj = nanhuprintEval_getOnionObj(childLi[i]);
+                        var firstLineOfTbodyCss = null;
+                        var lastLineofTbodyCss = null;
+                        
+                        if (tdObj.ifAndForEachAndSet) {
+                            for (var k = 0; k < tdObj.ifAndForEachAndSet.length; k++) {
+                                if (tdObj.ifAndForEachAndSet[k].TYPE_NAME == "nanhuprint.Params") {
+                                    var paramsObj = nanhuprintEval_getOnionObj(tdObj.ifAndForEachAndSet[k]);
+                                    if (paramsObj.param) {
+                                        for (var j = 0; j < paramsObj.param.length; j++) {
+                                            if (paramsObj.param[j].name == "firstLineOfTbodyCss") {
+                                                firstLineOfTbodyCss = paramsObj.param[j].value;
+                                            } else if (paramsObj.param[j].name == "lastLineofTbodyCss") {
+                                                lastLineofTbodyCss = paramsObj.param[j].value;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        var addStyle = null;
+                        if (customConfig.isFirstLine && firstLineOfTbodyCss) {
+                            addStyle = firstLineOfTbodyCss;
+                        } else if (customConfig.isLastLine && lastLineofTbodyCss) {
+                            addStyle = lastLineofTbodyCss;
+                        }
+                        if (addStyle) {
+                            itemCustomConfig = {
+                                addStyle: addStyle
+                            };
+                        }
+                    }
+                    var text = evalImplment.evalToHtml(childLi[i], env, itemCustomConfig);
+                    resultLi.push(text);
+                }
+            }
+        }
+    }
+
+    resultLi.push("</tr>");
+    return resultLi.join("");
 }
 
 TrEval.prototype.setIdAndParentId = function(metaObj, parentObj) {
@@ -1212,9 +1357,9 @@ TdEval.prototype.evalDynamicElement = function(metaObj, env, expressionEvaluator
 	return nanhuprintEval_commonEvalDynamicElement("td", metaObj, "ifAndForEachAndSet", env, expressionEvaluator);
 }
 
-TdEval.prototype.evalToHtml = function(metaObj, env) {
+TdEval.prototype.evalToHtml = function(metaObj, env, customConfig) {
 	var attdFieldLi = nanhuprintEval_commonAttrField;
-	return nanhuprintEval_commonEvalToHtml("td", metaObj, attdFieldLi, "ifAndForEachAndSet", env);
+	return nanhuprintEval_commonEvalToHtml("td", metaObj, attdFieldLi, "ifAndForEachAndSet", env, customConfig);
 }
 
 TdEval.prototype.setIdAndParentId = function(metaObj, parentObj) {
